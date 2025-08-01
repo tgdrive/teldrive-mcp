@@ -1,4 +1,4 @@
-# Teldrive MCP Server Instructions (Enhanced)
+# Teldrive MCP Server Instructions
 
 ## Overview
 The Teldrive MCP server enables interaction with your Teldrive storage through powerful tools. Key capabilities:
