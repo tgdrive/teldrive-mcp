@@ -307,7 +307,7 @@ func main() {
 		srv := &http.Server{
 			Addr:         ":" + port,
 			Handler:      mux,
-			ReadTimeout:  15 * time.Second,
+			ReadTimeout:  120 * time.Second,
 			WriteTimeout: 120 * time.Second,
 			IdleTimeout:  30 * time.Second,
 		}
@@ -322,7 +322,7 @@ func main() {
 
 		log.Println("Shutting down server...")
 
-		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Panicf("Server forced to shutdown: %v", err)
@@ -349,6 +349,7 @@ type fileContent struct {
 func readFile(ctx context.Context, client *api.Client, token, fileID string) (*fileContent, error) {
 	file, err := client.FilesStream(ctx, api.FilesStreamParams{
 		ID:          fileID,
+		Name:        "file",
 		AccessToken: api.NewOptString(token),
 	})
 	if err != nil {
