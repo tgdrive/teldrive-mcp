@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -11,7 +12,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "github.com/joho/godotenv/autoload"
@@ -23,6 +26,13 @@ func getEnv(key string) string {
 	value := os.Getenv(key)
 	if value == "" {
 		log.Fatalf("Environment variable %s is not set", key)
+	}
+	return value
+}
+func getEnvOrDefault(key string, defaultValue string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
 	}
 	return value
 }
@@ -72,15 +82,8 @@ func mapfileResponse(in *api.FileList) *fileList {
 	return &res
 }
 
-func main() {
-
-	baseUrl := getEnv("BASE_URL")
-	token := getEnv("AUTH_TOKEN")
-	client, err := api.NewClient(baseUrl+"/api", &securitySource{token: token})
-	if err != nil {
-		log.Fatalf("Failed to create API client: %v", err)
-		return
-	}
+func NewMCPServer(baseUrl string, token string) *server.MCPServer {
+	client, _ := api.NewClient(baseUrl+"/api", &securitySource{token: token})
 	mcpServer := server.NewMCPServer(
 		"TelDrive MCP",
 		"1.0.0",
@@ -262,14 +265,70 @@ func main() {
 			}, nil
 		}
 	})
-	mux := http.NewServeMux()
-	mux.Handle("/mcp/http", server.NewStreamableHTTPServer(mcpServer))
-	mux.Handle("/mcp/sse", server.NewSSEServer(mcpServer))
+	return mcpServer
+}
 
-	log.Println("Starting server on :8080...")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
-		log.Fatalf("Server error: %v", err)
+func main() {
+	var transport, baseUrl, apiToken, port string
+	flag.StringVar(&transport, "transport", "stdio", "Transport type (stdio or http)")
+	flag.StringVar(&baseUrl, "base-url", "", "Base URL of the Teldrive instance")
+	flag.StringVar(&apiToken, "token", "", "API token for authentication")
+	flag.StringVar(&port, "port", "8080", "Port to run the server on")
+	if baseUrl == "" {
+		baseUrl = getEnv("BASE_URL")
 	}
+	if apiToken == "" {
+		apiToken = getEnv("AUTH_TOKEN")
+	}
+	if port == "" {
+		port = getEnvOrDefault("PORT", "8080")
+	}
+	if transport != "stdio" && transport != "http" {
+		log.Fatalf("Invalid transport type: %s. Must be one of: stdio, http", transport)
+	}
+	flag.Parse()
+
+	mcpServer := NewMCPServer(baseUrl, apiToken)
+	switch transport {
+	case "stdio":
+		log.Println("Starting MCP server with stdio transport")
+		if err := server.ServeStdio(mcpServer); err != nil {
+			log.Fatalf("Server error: %v", err)
+		}
+	case "http":
+		log.Println("Starting MCP server with HTTP transport")
+		mux := http.NewServeMux()
+		mux.Handle("/mcp/http", server.NewStreamableHTTPServer(mcpServer))
+		mux.Handle("/mcp/sse", server.NewSSEServer(mcpServer))
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+
+		defer cancel()
+
+		srv := &http.Server{
+			Addr:         ":" + port,
+			Handler:      mux,
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 120 * time.Second,
+			IdleTimeout:  30 * time.Second,
+		}
+		go func() {
+			log.Println("Starting server on :" + port)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Panicf("listen: %s\n", err)
+			}
+		}()
+
+		<-ctx.Done()
+
+		log.Println("Shutting down server...")
+
+		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Panicf("Server forced to shutdown: %v", err)
+		}
+	}
+
 }
 
 type category int
